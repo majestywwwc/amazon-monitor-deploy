@@ -13,6 +13,8 @@ INSTALL_DIR="/opt/amazon_monitor"
 TMP_DIR="/tmp/amazon_monitor_install_$$"
 
 CURRENT_USER="${SUDO_USER:-$USER}"
+CURRENT_HOME="$(eval echo "~${CURRENT_USER}")"
+HOME_INPUT_FILE="${CURRENT_HOME}/input_asins.xlsx"
 
 if [ "$(id -u)" -eq 0 ]; then
     SUDO=""
@@ -35,14 +37,6 @@ msg() {
 pause() {
     echo
     read -r -p "按回车继续..."
-}
-
-normalize_shell_files() {
-    local dir="$1"
-    if [ -d "$dir" ]; then
-        find "$dir" -type f -name "*.sh" -exec sed -i 's/\r$//' {} \; 2>/dev/null || true
-        find "$dir" -type f -name "*.sh" -exec chmod +x {} \; 2>/dev/null || true
-    fi
 }
 
 install_docker() {
@@ -88,6 +82,19 @@ EOF
 
     echo
     echo "[提示] 如果你当前用户刚加入 docker 组，重新登录 SSH 一次会更稳。"
+}
+
+copy_input_file_to_home() {
+    local src="${INSTALL_DIR}/data/input_asins.xlsx"
+
+    if [ -f "$src" ]; then
+        cp "$src" "$HOME_INPUT_FILE"
+        chown "$CURRENT_USER":"$CURRENT_USER" "$HOME_INPUT_FILE" 2>/dev/null || true
+        echo "[完成] 已复制输入文件到: $HOME_INPUT_FILE"
+        ls -lh "$HOME_INPUT_FILE" 2>/dev/null || true
+    else
+        echo "[提示] 没找到可复制的输入文件: $src"
+    fi
 }
 
 deploy_release() {
@@ -149,12 +156,18 @@ deploy_release() {
     $SUDO chown -R "$CURRENT_USER":"$CURRENT_USER" "$INSTALL_DIR" || true
 
     echo "[完成] 已部署到: $INSTALL_DIR"
+
+    # 新增：部署结束后复制 input_asins.xlsx 到当前用户家目录
+    copy_input_file_to_home
 }
 
 show_next_steps() {
     msg "安装完成"
     echo "项目目录:"
     echo "  $INSTALL_DIR"
+    echo
+    echo "主目录输入文件:"
+    echo "  $HOME_INPUT_FILE"
     echo
     echo "下一步:"
     echo "  cd $INSTALL_DIR"
