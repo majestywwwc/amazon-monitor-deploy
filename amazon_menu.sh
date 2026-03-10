@@ -34,6 +34,102 @@ ensure_paths() {
     chmod -R 777 "$OUTPUT_DIR" "$DEBUG_DIR" "$STATE_DIR" "$ARCHIVE_DIR" >/dev/null 2>&1 || true
 }
 
+human_duration() {
+    local total_seconds="$1"
+
+    if [ -z "${total_seconds:-}" ] || [ "$total_seconds" -lt 0 ] 2>/dev/null; then
+        echo "未知"
+        return
+    fi
+
+    local days=$((total_seconds / 86400))
+    local hours=$(((total_seconds % 86400) / 3600))
+    local mins=$(((total_seconds % 3600) / 60))
+    local secs=$((total_seconds % 60))
+
+    local result=""
+    if [ "$days" -gt 0 ]; then
+        result="${result}${days}天"
+    fi
+    if [ "$hours" -gt 0 ]; then
+        result="${result}${hours}小时"
+    fi
+    if [ "$mins" -gt 0 ]; then
+        result="${result}${mins}分"
+    fi
+    result="${result}${secs}秒"
+
+    echo "$result"
+}
+
+show_worker_runtime() {
+    local service="$1"
+    local container_id=""
+    local status=""
+    local started_at=""
+    local finished_at=""
+    local now_ts=""
+    local start_ts=""
+    local finish_ts=""
+    local duration=""
+
+    container_id="$(compose_cmd ps -q "$service" 2>/dev/null | tail -n 1)"
+
+    echo "========== ${service} 运行信息 =========="
+
+    if [ -z "$container_id" ]; then
+        echo "状态: 未找到容器"
+        echo "用时: 未知"
+        echo
+        return
+    fi
+
+    status="$($SUDO docker inspect -f '{{.State.Status}}' "$container_id" 2>/dev/null || echo "unknown")"
+    started_at="$($SUDO docker inspect -f '{{.State.StartedAt}}' "$container_id" 2>/dev/null || true)"
+    finished_at="$($SUDO docker inspect -f '{{.State.FinishedAt}}' "$container_id" 2>/dev/null || true)"
+
+    echo "状态: $status"
+
+    if [ -n "$started_at" ] && [ "$started_at" != "0001-01-01T00:00:00Z" ]; then
+        start_ts="$(date -d "$started_at" +%s 2>/dev/null || echo "")"
+    else
+        start_ts=""
+    fi
+
+    if [ "$status" = "running" ]; then
+        if [ -n "$start_ts" ]; then
+            now_ts="$(date +%s)"
+            duration=$((now_ts - start_ts))
+            echo "已运行: $(human_duration "$duration")"
+        else
+            echo "已运行: 未知"
+        fi
+    elif [ "$status" = "exited" ] || [ "$status" = "dead" ]; then
+        if [ -n "$finished_at" ] && [ "$finished_at" != "0001-01-01T00:00:00Z" ]; then
+            finish_ts="$(date -d "$finished_at" +%s 2>/dev/null || echo "")"
+        else
+            finish_ts=""
+        fi
+
+        if [ -n "$start_ts" ] && [ -n "$finish_ts" ]; then
+            duration=$((finish_ts - start_ts))
+            echo "总用时: $(human_duration "$duration")"
+        else
+            echo "总用时: 未知"
+        fi
+    else
+        if [ -n "$start_ts" ]; then
+            now_ts="$(date +%s)"
+            duration=$((now_ts - start_ts))
+            echo "运行时长: $(human_duration "$duration")"
+        else
+            echo "运行时长: 未知"
+        fi
+    fi
+
+    echo
+}
+
 check_env() {
     echo "========== 环境检查 =========="
     echo "项目目录: $PROJECT_DIR"
@@ -160,13 +256,19 @@ show_status() {
 }
 
 show_worker1_logs() {
+    show_worker_runtime "worker1"
     echo "========== worker1 日志 =========="
+    echo "提示: 按 Ctrl+C 退出日志查看，退出后可按回车返回菜单"
     compose_cmd logs -f worker1
+    pause
 }
 
 show_worker2_logs() {
+    show_worker_runtime "worker2"
     echo "========== worker2 日志 =========="
+    echo "提示: 按 Ctrl+C 退出日志查看，退出后可按回车返回菜单"
     compose_cmd logs -f worker2
+    pause
 }
 
 show_outputs() {
@@ -184,11 +286,15 @@ package_outputs() {
     pkg_file="$EXPORT_DIR/amazon_outputs_${ts}.tar.gz"
 
     if ls "$OUTPUT_DIR"/result_worker*.xlsx >/dev/null 2>&1; then
-        tar czf "$pkg_file" -C "$OUTPUT_DIR" .
-        echo "[完成] 已打包输出结果到: $pkg_file"
+        (
+            cd "$OUTPUT_DIR" || exit 1
+            tar czf "$pkg_file" result_worker*.xlsx
+        )
+        echo "[完成] 已打包表格文件到: $pkg_file"
+        echo "请在/home/ubuntu/目录刷新查看表格压缩包文件"
         ls -lh "$pkg_file" 2>/dev/null || true
     else
-        echo "[提示] 当前没有可打包的输出文件"
+        echo "[提示] 当前没有可打包的表格文件"
     fi
 }
 
@@ -224,7 +330,7 @@ menu() {
     echo "6. 查看 worker1 日志"
     echo "7. 查看 worker2 日志"
     echo "8. 查看输出文件"
-    echo "9. 打包输出结果到 /home/ubuntu"
+    echo "9. 打包表格文件"
     echo "10. 导入ASIN文件"
     echo "0. 退出"
     echo "=========================================="
