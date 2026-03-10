@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
 # Amazon Monitor 管理菜单
-# 适用于当前 docker compose 双 worker 版本
+# 统一项目目录: /opt/amazon_monitor
 
 set -u
 
-PROJECT_DIR="/home/amazon_a/amazon_monitor_release"
+PROJECT_DIR="/opt/amazon_monitor"
 INPUT_FILE="$PROJECT_DIR/data/input_asins.xlsx"
 OUTPUT_DIR="$PROJECT_DIR/output"
 DEBUG_DIR="$PROJECT_DIR/debug"
@@ -29,7 +29,7 @@ pause() {
 
 ensure_paths() {
     mkdir -p "$OUTPUT_DIR" "$DEBUG_DIR/worker1" "$DEBUG_DIR/worker2" "$STATE_DIR/worker1" "$STATE_DIR/worker2" "$ARCHIVE_DIR"
-    chmod -R 777 "$OUTPUT_DIR" "$DEBUG_DIR" "$STATE_DIR" >/dev/null 2>&1 || true
+    chmod -R 777 "$OUTPUT_DIR" "$DEBUG_DIR" "$STATE_DIR" "$ARCHIVE_DIR" >/dev/null 2>&1 || true
 }
 
 check_env() {
@@ -43,8 +43,13 @@ check_env() {
         return 1
     fi
 
-    if [ ! -f "$INPUT_FILE" ]; then
-        echo "[失败] 输入文件不存在: $INPUT_FILE"
+    if [ ! -f "$PROJECT_DIR/compose.yaml" ]; then
+        echo "[失败] compose.yaml 不存在"
+        return 1
+    fi
+
+    if [ ! -f "$PROJECT_DIR/amazon_asin_monitor.py" ]; then
+        echo "[失败] amazon_asin_monitor.py 不存在"
         return 1
     fi
 
@@ -55,7 +60,13 @@ check_env() {
 
     echo "[成功] docker 已安装: $(docker --version 2>/dev/null)"
     echo "[成功] compose 版本: $(docker compose version 2>/dev/null)"
-    echo "[成功] 输入文件存在"
+
+    if [ -f "$INPUT_FILE" ]; then
+        echo "[成功] 输入文件存在"
+    else
+        echo "[提示] 输入文件不存在，请放到: $INPUT_FILE"
+    fi
+
     echo
     return 0
 }
@@ -84,6 +95,12 @@ start_workers() {
     echo "========== 启动双 worker =========="
     check_env || return 1
     ensure_paths
+
+    if [ ! -f "$INPUT_FILE" ]; then
+        echo "[失败] 输入文件不存在，无法启动"
+        return 1
+    fi
+
     backup_old_outputs
 
     echo "[步骤] 停止旧容器..."
@@ -99,6 +116,12 @@ rebuild_and_start() {
     echo "========== 重建镜像并启动双 worker =========="
     check_env || return 1
     ensure_paths
+
+    if [ ! -f "$INPUT_FILE" ]; then
+        echo "[失败] 输入文件不存在，无法启动"
+        return 1
+    fi
+
     backup_old_outputs
 
     echo "[步骤] 停止旧容器..."
