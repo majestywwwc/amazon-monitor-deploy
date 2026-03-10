@@ -37,11 +37,25 @@ pause() {
     read -r -p "按回车继续..."
 }
 
+normalize_shell_files() {
+    local dir="$1"
+    if [ -d "$dir" ]; then
+        find "$dir" -type f -name "*.sh" -exec sed -i 's/\r$//' {} \; 2>/dev/null || true
+        find "$dir" -type f -name "*.sh" -exec chmod +x {} \; 2>/dev/null || true
+    fi
+}
+
 install_docker() {
     msg "安装 Docker"
 
     $SUDO apt update
     $SUDO apt install -y ca-certificates curl
+
+    # 清理旧配置，避免 signed-by 冲突
+    $SUDO rm -f /etc/apt/sources.list.d/docker.list
+    $SUDO rm -f /etc/apt/sources.list.d/docker.sources
+    $SUDO rm -f /etc/apt/keyrings/docker.asc
+    $SUDO rm -f /etc/apt/keyrings/docker.gpg
 
     $SUDO install -m 0755 -d /etc/apt/keyrings
     curl -fsSL https://download.docker.com/linux/ubuntu/gpg -o /tmp/docker.asc
@@ -91,11 +105,14 @@ deploy_release() {
 
     tar xzf "$RELEASE_FILE"
 
-    PACKAGE_ROOT="$(find "$TMP_DIR" -mindepth 1 -maxdepth 1 -type d | head -n 1)"
-
-    if [ -z "${PACKAGE_ROOT:-}" ] || [ ! -d "$PACKAGE_ROOT" ]; then
-        echo "[失败] 解压后未找到发布目录"
-        exit 1
+    local package_root=""
+    if [ -d "$TMP_DIR/amazon_monitor" ]; then
+        package_root="$TMP_DIR/amazon_monitor"
+    else
+        package_root="$(find "$TMP_DIR" -mindepth 1 -maxdepth 1 -type d | head -n 1 || true)"
+        if [ -z "$package_root" ]; then
+            package_root="$TMP_DIR"
+        fi
     fi
 
     $SUDO mkdir -p "$INSTALL_DIR"
@@ -109,22 +126,25 @@ deploy_release() {
 
     # 核心文件覆盖更新
     for f in amazon_asin_monitor.py Dockerfile compose.yaml requirements.txt amazon_menu.sh README.md; do
-        if [ -f "$PACKAGE_ROOT/$f" ]; then
-            $SUDO cp "$PACKAGE_ROOT/$f" "$INSTALL_DIR/"
+        if [ -f "$package_root/$f" ]; then
+            $SUDO cp "$package_root/$f" "$INSTALL_DIR/"
         fi
     done
 
     # 输入文件：如果现场已有 input_asins.xlsx，就保留；没有才从包里复制
-    if [ ! -f "$INSTALL_DIR/data/input_asins.xlsx" ] && [ -f "$PACKAGE_ROOT/data/input_asins.xlsx" ]; then
-        $SUDO cp "$PACKAGE_ROOT/data/input_asins.xlsx" "$INSTALL_DIR/data/"
+    if [ ! -f "$INSTALL_DIR/data/input_asins.xlsx" ] && [ -f "$package_root/data/input_asins.xlsx" ]; then
+        $SUDO cp "$package_root/data/input_asins.xlsx" "$INSTALL_DIR/data/"
     fi
 
-    # 如果你以后改成放模板文件，也自动复制
-    if [ -f "$PACKAGE_ROOT/data/input_asins_template.xlsx" ]; then
-        $SUDO cp "$PACKAGE_ROOT/data/input_asins_template.xlsx" "$INSTALL_DIR/data/" || true
+    # 如果以后放模板，也会顺手复制
+    if [ -f "$package_root/data/input_asins_template.xlsx" ]; then
+        $SUDO cp "$package_root/data/input_asins_template.xlsx" "$INSTALL_DIR/data/" || true
     fi
 
-    $SUDO chmod +x "$INSTALL_DIR/amazon_menu.sh" || true
+    # 修复 shell 文件换行符并赋执行权限
+    $SUDO bash -c "find '$INSTALL_DIR' -type f -name '*.sh' -exec sed -i 's/\r$//' {} \; 2>/dev/null || true"
+    $SUDO bash -c "find '$INSTALL_DIR' -type f -name '*.sh' -exec chmod +x {} \; 2>/dev/null || true"
+
     $SUDO chmod -R 777 "$INSTALL_DIR/output" "$INSTALL_DIR/debug" "$INSTALL_DIR/state" "$INSTALL_DIR/archive" || true
     $SUDO chown -R "$CURRENT_USER":"$CURRENT_USER" "$INSTALL_DIR" || true
 
