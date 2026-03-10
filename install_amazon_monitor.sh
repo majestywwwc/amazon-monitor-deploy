@@ -1,48 +1,54 @@
 #!/usr/bin/env bash
-# Amazon Monitor 一键安装脚本
-# 用于全新 Ubuntu 服务器
-# 会安装 Docker，下载最新发布包，解压部署
+# Amazon Monitor 一键安装 / 更新脚本
+# 统一安装到 /opt/amazon_monitor
 
-set -e
+set -Eeuo pipefail
 
 REPO_OWNER="majestywwwc"
 REPO_NAME="amazon-monitor-deploy"
 RELEASE_FILE="amazon_monitor_release.tar.gz"
-
 RELEASE_URL="https://github.com/${REPO_OWNER}/${REPO_NAME}/releases/latest/download/${RELEASE_FILE}"
 
-INSTALL_BASE="/home/${USER}"
-INSTALL_DIR="${INSTALL_BASE}/amazon_monitor_release"
+INSTALL_DIR="/opt/amazon_monitor"
+TMP_DIR="/tmp/amazon_monitor_install_$$"
 
-echo "=========================================="
-echo " Amazon Monitor 一键安装脚本"
-echo "=========================================="
-echo "当前用户: ${USER}"
-echo "安装目录: ${INSTALL_DIR}"
-echo "发布包地址: ${RELEASE_URL}"
-echo "=========================================="
-echo
+CURRENT_USER="${SUDO_USER:-$USER}"
 
 if [ "$(id -u)" -eq 0 ]; then
-    echo "请不要直接用 root 运行这个脚本。"
-    echo "请使用你的普通用户运行，例如 amazon_a。"
-    exit 1
+    SUDO=""
+else
+    SUDO="sudo"
 fi
 
-sudo -v
+cleanup() {
+    rm -rf "$TMP_DIR" >/dev/null 2>&1 || true
+}
+trap cleanup EXIT
+
+msg() {
+    echo
+    echo "=========================================="
+    echo "$1"
+    echo "=========================================="
+}
+
+pause() {
+    echo
+    read -r -p "按回车继续..."
+}
 
 install_docker() {
-    echo "========== 安装 Docker =========="
+    msg "安装 Docker"
 
-    sudo apt update
-    sudo apt install -y ca-certificates curl
+    $SUDO apt update
+    $SUDO apt install -y ca-certificates curl
 
-    sudo install -m 0755 -d /etc/apt/keyrings
+    $SUDO install -m 0755 -d /etc/apt/keyrings
     curl -fsSL https://download.docker.com/linux/ubuntu/gpg -o /tmp/docker.asc
-    sudo mv /tmp/docker.asc /etc/apt/keyrings/docker.asc
-    sudo chmod a+r /etc/apt/keyrings/docker.asc
+    $SUDO mv /tmp/docker.asc /etc/apt/keyrings/docker.asc
+    $SUDO chmod a+r /etc/apt/keyrings/docker.asc
 
-    sudo tee /etc/apt/sources.list.d/docker.sources > /dev/null <<EOF
+    $SUDO tee /etc/apt/sources.list.d/docker.sources > /dev/null <<EOF
 Types: deb
 URIs: https://download.docker.com/linux/ubuntu
 Suites: $(. /etc/os-release && echo "${UBUNTU_CODENAME:-$VERSION_CODENAME}")
@@ -50,87 +56,109 @@ Components: stable
 Signed-By: /etc/apt/keyrings/docker.asc
 EOF
 
-    sudo apt update
-    sudo apt install -y docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin
+    $SUDO apt update
+    $SUDO apt install -y docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin
 
-    sudo systemctl enable docker
-    sudo systemctl start docker
+    $SUDO systemctl enable docker
+    $SUDO systemctl start docker
 
     if ! getent group docker >/dev/null 2>&1; then
-        sudo groupadd docker
+        $SUDO groupadd docker
     fi
 
-    sudo usermod -aG docker "$USER"
+    $SUDO usermod -aG docker "$CURRENT_USER" || true
+
+    echo "[完成] Docker 已安装"
+    $SUDO docker --version || true
+    $SUDO docker compose version || true
 
     echo
-    echo "[完成] Docker 安装成功"
-    docker --version || true
-    sudo docker compose version || true
-    echo
-    echo "[提示] 组权限刚刚更新。安装完成后请重新登录 SSH 一次，再继续用 docker。"
+    echo "[提示] 如果你当前用户刚加入 docker 组，重新登录 SSH 一次会更稳。"
 }
 
-download_and_extract() {
-    echo "========== 下载并部署最新发布包 =========="
+deploy_release() {
+    msg "下载并部署最新发布包"
 
-    mkdir -p "${INSTALL_BASE}"
-    cd "${INSTALL_BASE}"
+    mkdir -p "$TMP_DIR"
+    cd "$TMP_DIR"
 
-    rm -f "${RELEASE_FILE}"
-    curl -L -o "${RELEASE_FILE}" "${RELEASE_URL}"
+    curl -L --fail -o "$RELEASE_FILE" "$RELEASE_URL"
 
-    if [ ! -f "${RELEASE_FILE}" ]; then
+    if [ ! -f "$RELEASE_FILE" ]; then
         echo "[失败] 发布包下载失败"
         exit 1
     fi
 
-    echo "[完成] 发布包下载成功：${INSTALL_BASE}/${RELEASE_FILE}"
+    tar xzf "$RELEASE_FILE"
 
-    rm -rf "${INSTALL_DIR}"
-    tar xzf "${RELEASE_FILE}"
+    PACKAGE_ROOT="$(find "$TMP_DIR" -mindepth 1 -maxdepth 1 -type d | head -n 1)"
 
-    # 自动兼容 pkg 目录名
-    if [ -d "${INSTALL_BASE}/amazon_monitor_release_pkg" ]; then
-        mv "${INSTALL_BASE}/amazon_monitor_release_pkg" "${INSTALL_DIR}"
-    fi
-
-    if [ ! -d "${INSTALL_DIR}" ]; then
-        echo "[失败] 解压后没有找到安装目录"
+    if [ -z "${PACKAGE_ROOT:-}" ] || [ ! -d "$PACKAGE_ROOT" ]; then
+        echo "[失败] 解压后未找到发布目录"
         exit 1
     fi
 
-    mkdir -p "${INSTALL_DIR}/output"
-    mkdir -p "${INSTALL_DIR}/debug/worker1"
-    mkdir -p "${INSTALL_DIR}/debug/worker2"
-    mkdir -p "${INSTALL_DIR}/state/worker1"
-    mkdir -p "${INSTALL_DIR}/state/worker2"
+    $SUDO mkdir -p "$INSTALL_DIR"
+    $SUDO mkdir -p "$INSTALL_DIR/data"
+    $SUDO mkdir -p "$INSTALL_DIR/output"
+    $SUDO mkdir -p "$INSTALL_DIR/debug/worker1"
+    $SUDO mkdir -p "$INSTALL_DIR/debug/worker2"
+    $SUDO mkdir -p "$INSTALL_DIR/state/worker1"
+    $SUDO mkdir -p "$INSTALL_DIR/state/worker2"
+    $SUDO mkdir -p "$INSTALL_DIR/archive"
 
-    chmod -R 777 "${INSTALL_DIR}/output" "${INSTALL_DIR}/debug" "${INSTALL_DIR}/state" || true
+    # 核心文件覆盖更新
+    for f in amazon_asin_monitor.py Dockerfile compose.yaml requirements.txt amazon_menu.sh README.md; do
+        if [ -f "$PACKAGE_ROOT/$f" ]; then
+            $SUDO cp "$PACKAGE_ROOT/$f" "$INSTALL_DIR/"
+        fi
+    done
 
-    echo "[完成] 已部署到：${INSTALL_DIR}"
+    # 输入文件：如果现场已有 input_asins.xlsx，就保留；没有才从包里复制
+    if [ ! -f "$INSTALL_DIR/data/input_asins.xlsx" ] && [ -f "$PACKAGE_ROOT/data/input_asins.xlsx" ]; then
+        $SUDO cp "$PACKAGE_ROOT/data/input_asins.xlsx" "$INSTALL_DIR/data/"
+    fi
+
+    # 如果你以后改成放模板文件，也自动复制
+    if [ -f "$PACKAGE_ROOT/data/input_asins_template.xlsx" ]; then
+        $SUDO cp "$PACKAGE_ROOT/data/input_asins_template.xlsx" "$INSTALL_DIR/data/" || true
+    fi
+
+    $SUDO chmod +x "$INSTALL_DIR/amazon_menu.sh" || true
+    $SUDO chmod -R 777 "$INSTALL_DIR/output" "$INSTALL_DIR/debug" "$INSTALL_DIR/state" "$INSTALL_DIR/archive" || true
+    $SUDO chown -R "$CURRENT_USER":"$CURRENT_USER" "$INSTALL_DIR" || true
+
+    echo "[完成] 已部署到: $INSTALL_DIR"
 }
 
 show_next_steps() {
+    msg "安装完成"
+    echo "项目目录:"
+    echo "  $INSTALL_DIR"
     echo
-    echo "=========================================="
-    echo " 安装完成"
-    echo "=========================================="
-    echo "下一步："
-    echo "1. 重新登录 SSH（很重要，刷新 docker 组权限）"
-    echo "2. 进入目录："
-    echo "   cd ${INSTALL_DIR}"
-    echo "3. 运行菜单："
-    echo "   ./amazon_menu.sh"
-    echo "=========================================="
+    echo "下一步:"
+    echo "  cd $INSTALL_DIR"
+    echo "  ./amazon_menu.sh"
+    echo
+    echo "如果刚装完 Docker，重新登录 SSH 一次更稳。"
 }
 
-main() {
-    echo "请选择操作："
+main_menu() {
+    clear
+    echo "=========================================="
+    echo " Amazon Monitor 安装 / 更新脚本"
+    echo " 安装目录: $INSTALL_DIR"
+    echo " 发布地址: $RELEASE_URL"
+    echo "=========================================="
     echo "1. 只安装 Docker"
     echo "2. 只下载并部署最新发布包"
     echo "3. 安装 Docker + 下载并部署最新发布包"
     echo "0. 退出"
-    echo
+    echo "=========================================="
+}
+
+while true; do
+    main_menu
     read -r -p "请输入选项编号: " choice
     echo
 
@@ -138,25 +166,26 @@ main() {
         1)
             install_docker
             show_next_steps
+            pause
             ;;
         2)
-            download_and_extract
+            deploy_release
             show_next_steps
+            pause
             ;;
         3)
             install_docker
-            download_and_extract
+            deploy_release
             show_next_steps
+            pause
             ;;
         0)
             echo "已退出"
             exit 0
             ;;
         *)
-            echo "无效选项"
-            exit 1
+            echo "无效选项，请重新输入"
+            pause
             ;;
     esac
-}
-
-main
+done
