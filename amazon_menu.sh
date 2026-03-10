@@ -1,0 +1,253 @@
+#!/usr/bin/env bash
+# Amazon Monitor 管理菜单
+# 适用于当前 docker compose 双 worker 版本
+
+set -u
+
+PROJECT_DIR="/home/amazon_a/amazon_monitor_release"
+INPUT_FILE="$PROJECT_DIR/data/input_asins.xlsx"
+OUTPUT_DIR="$PROJECT_DIR/output"
+DEBUG_DIR="$PROJECT_DIR/debug"
+STATE_DIR="$PROJECT_DIR/state"
+ARCHIVE_DIR="$PROJECT_DIR/archive"
+
+if [ "$(id -u)" -eq 0 ]; then
+    SUDO=""
+else
+    SUDO="sudo"
+fi
+
+compose_cmd() {
+    cd "$PROJECT_DIR" || exit 1
+    $SUDO docker compose "$@"
+}
+
+pause() {
+    echo
+    read -r -p "按回车继续..."
+}
+
+ensure_paths() {
+    mkdir -p "$OUTPUT_DIR" "$DEBUG_DIR/worker1" "$DEBUG_DIR/worker2" "$STATE_DIR/worker1" "$STATE_DIR/worker2" "$ARCHIVE_DIR"
+    chmod -R 777 "$OUTPUT_DIR" "$DEBUG_DIR" "$STATE_DIR" >/dev/null 2>&1 || true
+}
+
+check_env() {
+    echo "========== 环境检查 =========="
+    echo "项目目录: $PROJECT_DIR"
+    echo "输入文件: $INPUT_FILE"
+    echo
+
+    if [ ! -d "$PROJECT_DIR" ]; then
+        echo "[失败] 项目目录不存在"
+        return 1
+    fi
+
+    if [ ! -f "$INPUT_FILE" ]; then
+        echo "[失败] 输入文件不存在: $INPUT_FILE"
+        return 1
+    fi
+
+    if ! command -v docker >/dev/null 2>&1; then
+        echo "[失败] docker 未安装"
+        return 1
+    fi
+
+    echo "[成功] docker 已安装: $(docker --version 2>/dev/null)"
+    echo "[成功] compose 版本: $(docker compose version 2>/dev/null)"
+    echo "[成功] 输入文件存在"
+    echo
+    return 0
+}
+
+backup_old_outputs() {
+    ensure_paths
+    local ts
+    ts="$(date +%Y%m%d_%H%M%S)"
+    local backed_up=0
+
+    for f in "$OUTPUT_DIR"/result_worker*.xlsx; do
+        if [ -f "$f" ]; then
+            cp "$f" "$ARCHIVE_DIR/$(basename "${f%.xlsx}")_${ts}.xlsx"
+            backed_up=1
+        fi
+    done
+
+    if [ "$backed_up" -eq 1 ]; then
+        echo "[信息] 已备份旧输出到: $ARCHIVE_DIR"
+    else
+        echo "[信息] 没有旧输出需要备份"
+    fi
+}
+
+start_workers() {
+    echo "========== 启动双 worker =========="
+    check_env || return 1
+    ensure_paths
+    backup_old_outputs
+
+    echo "[步骤] 停止旧容器..."
+    compose_cmd down
+
+    echo "[步骤] 启动双 worker..."
+    compose_cmd up -d
+
+    echo "[完成] 双 worker 已启动"
+}
+
+rebuild_and_start() {
+    echo "========== 重建镜像并启动双 worker =========="
+    check_env || return 1
+    ensure_paths
+    backup_old_outputs
+
+    echo "[步骤] 停止旧容器..."
+    compose_cmd down
+
+    echo "[步骤] 重建镜像（可能需要几分钟）..."
+    compose_cmd build --no-cache
+
+    echo "[步骤] 启动双 worker..."
+    compose_cmd up -d
+
+    echo "[完成] 重建并启动完成"
+}
+
+stop_workers() {
+    echo "========== 停止任务 =========="
+    compose_cmd down
+    echo "[完成] 已停止"
+}
+
+show_status() {
+    echo "========== 当前状态 =========="
+    compose_cmd ps
+    echo
+    echo "========== 输出文件 =========="
+    ls -lh "$OUTPUT_DIR" 2>/dev/null || true
+}
+
+show_worker1_logs() {
+    echo "========== worker1 日志 =========="
+    compose_cmd logs -f worker1
+}
+
+show_worker2_logs() {
+    echo "========== worker2 日志 =========="
+    compose_cmd logs -f worker2
+}
+
+show_all_logs() {
+    echo "========== 全部日志 =========="
+    compose_cmd logs -f
+}
+
+show_outputs() {
+    echo "========== 输出目录 =========="
+    ls -lh "$OUTPUT_DIR" 2>/dev/null || true
+    echo
+    echo "========== 归档目录 =========="
+    ls -lh "$ARCHIVE_DIR" 2>/dev/null || true
+}
+
+package_outputs() {
+    ensure_paths
+    local ts zip_file
+    ts="$(date +%Y%m%d_%H%M%S)"
+    zip_file="$ARCHIVE_DIR/outputs_${ts}.tar.gz"
+
+    if ls "$OUTPUT_DIR"/result_worker*.xlsx >/dev/null 2>&1; then
+        tar czf "$zip_file" -C "$OUTPUT_DIR" .
+        echo "[完成] 已打包输出结果: $zip_file"
+    else
+        echo "[提示] 当前没有可打包的输出文件"
+    fi
+}
+
+show_input_file() {
+    echo "========== 输入文件检查 =========="
+    if [ -f "$INPUT_FILE" ]; then
+        ls -lh "$INPUT_FILE"
+    else
+        echo "[失败] 输入文件不存在: $INPUT_FILE"
+    fi
+}
+
+menu() {
+    clear
+    echo "=========================================="
+    echo " Amazon 监控系统菜单"
+    echo " 项目目录: $PROJECT_DIR"
+    echo "=========================================="
+    echo "1. 检查环境"
+    echo "2. 启动双 worker"
+    echo "3. 重建镜像并启动双 worker"
+    echo "4. 停止任务"
+    echo "5. 查看运行状态"
+    echo "6. 查看 worker1 日志"
+    echo "7. 查看 worker2 日志"
+    echo "8. 查看全部日志"
+    echo "9. 查看输出文件"
+    echo "10. 打包输出结果"
+    echo "11. 检查输入文件"
+    echo "0. 退出"
+    echo "=========================================="
+}
+
+while true; do
+    menu
+    read -r -p "请输入选项编号: " choice
+    echo
+
+    case "$choice" in
+        1)
+            check_env
+            pause
+            ;;
+        2)
+            start_workers
+            pause
+            ;;
+        3)
+            rebuild_and_start
+            pause
+            ;;
+        4)
+            stop_workers
+            pause
+            ;;
+        5)
+            show_status
+            pause
+            ;;
+        6)
+            show_worker1_logs
+            ;;
+        7)
+            show_worker2_logs
+            ;;
+        8)
+            show_all_logs
+            ;;
+        9)
+            show_outputs
+            pause
+            ;;
+        10)
+            package_outputs
+            pause
+            ;;
+        11)
+            show_input_file
+            pause
+            ;;
+        0)
+            echo "已退出"
+            exit 0
+            ;;
+        *)
+            echo "无效选项，请重新输入"
+            pause
+            ;;
+    esac
+done
