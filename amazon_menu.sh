@@ -6,10 +6,12 @@ set -u
 
 PROJECT_DIR="/opt/amazon_monitor"
 INPUT_FILE="$PROJECT_DIR/data/input_asins.xlsx"
+IMPORT_SOURCE="/home/ubuntu/input_asins.xlsx"
 OUTPUT_DIR="$PROJECT_DIR/output"
 DEBUG_DIR="$PROJECT_DIR/debug"
 STATE_DIR="$PROJECT_DIR/state"
 ARCHIVE_DIR="$PROJECT_DIR/archive"
+EXPORT_DIR="/home/ubuntu"
 
 if [ "$(id -u)" -eq 0 ]; then
     SUDO=""
@@ -35,7 +37,8 @@ ensure_paths() {
 check_env() {
     echo "========== 环境检查 =========="
     echo "项目目录: $PROJECT_DIR"
-    echo "输入文件: $INPUT_FILE"
+    echo "当前输入文件: $INPUT_FILE"
+    echo "导入源文件: $IMPORT_SOURCE"
     echo
 
     if [ ! -d "$PROJECT_DIR" ]; then
@@ -62,9 +65,15 @@ check_env() {
     echo "[成功] compose 版本: $(docker compose version 2>/dev/null)"
 
     if [ -f "$INPUT_FILE" ]; then
-        echo "[成功] 输入文件存在"
+        echo "[成功] 当前输入文件存在"
     else
-        echo "[提示] 输入文件不存在，请放到: $INPUT_FILE"
+        echo "[提示] 当前输入文件不存在: $INPUT_FILE"
+    fi
+
+    if [ -f "$IMPORT_SOURCE" ]; then
+        echo "[成功] 可导入源文件存在"
+    else
+        echo "[提示] 可导入源文件不存在: $IMPORT_SOURCE"
     fi
 
     echo
@@ -160,11 +169,6 @@ show_worker2_logs() {
     compose_cmd logs -f worker2
 }
 
-show_all_logs() {
-    echo "========== 全部日志 =========="
-    compose_cmd logs -f
-}
-
 show_outputs() {
     echo "========== 输出目录 =========="
     ls -lh "$OUTPUT_DIR" 2>/dev/null || true
@@ -175,25 +179,35 @@ show_outputs() {
 
 package_outputs() {
     ensure_paths
-    local ts zip_file
+    local ts pkg_file
     ts="$(date +%Y%m%d_%H%M%S)"
-    zip_file="$ARCHIVE_DIR/outputs_${ts}.tar.gz"
+    pkg_file="$EXPORT_DIR/amazon_outputs_${ts}.tar.gz"
 
     if ls "$OUTPUT_DIR"/result_worker*.xlsx >/dev/null 2>&1; then
-        tar czf "$zip_file" -C "$OUTPUT_DIR" .
-        echo "[完成] 已打包输出结果: $zip_file"
+        tar czf "$pkg_file" -C "$OUTPUT_DIR" .
+        echo "[完成] 已打包输出结果到: $pkg_file"
+        ls -lh "$pkg_file" 2>/dev/null || true
     else
         echo "[提示] 当前没有可打包的输出文件"
     fi
 }
 
-show_input_file() {
-    echo "========== 输入文件检查 =========="
-    if [ -f "$INPUT_FILE" ]; then
-        ls -lh "$INPUT_FILE"
-    else
-        echo "[失败] 输入文件不存在: $INPUT_FILE"
+import_asin_file() {
+    echo "========== 导入ASIN文件 =========="
+
+    if [ ! -f "$IMPORT_SOURCE" ]; then
+        echo "[失败] 没找到导入源文件: $IMPORT_SOURCE"
+        return 1
     fi
+
+    mkdir -p "$PROJECT_DIR/data"
+
+    cp "$IMPORT_SOURCE" "$INPUT_FILE"
+
+    echo "[完成] 已导入输入文件"
+    echo "来源: $IMPORT_SOURCE"
+    echo "目标: $INPUT_FILE"
+    ls -lh "$INPUT_FILE" 2>/dev/null || true
 }
 
 menu() {
@@ -209,10 +223,9 @@ menu() {
     echo "5. 查看运行状态"
     echo "6. 查看 worker1 日志"
     echo "7. 查看 worker2 日志"
-    echo "8. 查看全部日志"
-    echo "9. 查看输出文件"
-    echo "10. 打包输出结果"
-    echo "11. 检查输入文件"
+    echo "8. 查看输出文件"
+    echo "9. 打包输出结果到 /home/ubuntu"
+    echo "10. 导入ASIN文件"
     echo "0. 退出"
     echo "=========================================="
 }
@@ -250,18 +263,15 @@ while true; do
             show_worker2_logs
             ;;
         8)
-            show_all_logs
-            ;;
-        9)
             show_outputs
             pause
             ;;
-        10)
+        9)
             package_outputs
             pause
             ;;
-        11)
-            show_input_file
+        10)
+            import_asin_file
             pause
             ;;
         0)
