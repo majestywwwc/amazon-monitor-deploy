@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# Amazon Monitor 管理菜单（V1.5 单worker分批版）
-# 统一项目目录: /opt/amazon_monitor
+# Amazon Monitor 管理菜单（V1.8 单worker分批版）
+# V1.8 新增：选 3 启动前自动清空上次爬取残留，但保留 input_asins.xlsx
 
 set -u
 
@@ -30,8 +30,14 @@ pause() {
 }
 
 ensure_paths() {
-    mkdir -p "$OUTPUT_DIR" "$OUTPUT_DIR/batches" "$DEBUG_DIR/worker1" "$STATE_DIR/worker1" "$ARCHIVE_DIR"
+    mkdir -p "$PROJECT_DIR/data" \
+             "$OUTPUT_DIR" \
+             "$OUTPUT_DIR/batches" \
+             "$DEBUG_DIR/worker1" \
+             "$STATE_DIR/worker1" \
+             "$ARCHIVE_DIR"
     chmod -R 777 "$OUTPUT_DIR" "$DEBUG_DIR" "$STATE_DIR" "$ARCHIVE_DIR" >/dev/null 2>&1 || true
+    chmod -R 777 "$PROJECT_DIR/data" >/dev/null 2>&1 || true
 }
 
 human_duration() {
@@ -186,7 +192,9 @@ backup_old_outputs() {
         "$OUTPUT_DIR"/final_results.xlsx \
         "$OUTPUT_DIR"/final_results.csv \
         "$OUTPUT_DIR"/failed_asins.csv \
-        "$OUTPUT_DIR"/run_summary.json
+        "$OUTPUT_DIR"/run_summary.json \
+        "$OUTPUT_DIR"/partial_final_results.xlsx \
+        "$OUTPUT_DIR"/partial_final_results.csv
     do
         if [ -f "$f" ]; then
             cp "$f" "$ARCHIVE_DIR/$(basename "$f")_${ts}"
@@ -201,8 +209,33 @@ backup_old_outputs() {
     fi
 }
 
+clear_previous_run_data() {
+    echo "========== 清空上次爬取残留 =========="
+    ensure_paths
+
+    echo "[步骤] 删除 output 下旧结果..."
+    find "$OUTPUT_DIR" -mindepth 1 -maxdepth 1 -exec rm -rf {} + 2>/dev/null || true
+
+    echo "[步骤] 删除 debug/worker1 下旧截图和 HTML..."
+    find "$DEBUG_DIR/worker1" -mindepth 1 -maxdepth 1 -exec rm -rf {} + 2>/dev/null || true
+
+    echo "[步骤] 删除 archive 下旧备份..."
+    find "$ARCHIVE_DIR" -mindepth 1 -maxdepth 1 -exec rm -rf {} + 2>/dev/null || true
+
+    echo "[步骤] 删除 state/worker1 下旧浏览器状态..."
+    find "$STATE_DIR/worker1" -mindepth 1 -maxdepth 1 -exec rm -rf {} + 2>/dev/null || true
+
+    echo "[步骤] 删除 __pycache__..."
+    find "$PROJECT_DIR" -type d -name "__pycache__" -exec rm -rf {} + 2>/dev/null || true
+
+    echo "[步骤] 重新创建必要目录..."
+    mkdir -p "$OUTPUT_DIR/batches" "$DEBUG_DIR/worker1" "$STATE_DIR/worker1"
+
+    echo "[完成] 已清空上次爬取相关文件（保留 input_asins.xlsx）"
+}
+
 start_worker() {
-    echo "========== 启动单 worker =========="
+    echo "========== 启动单 worker（V1.8 清空旧数据版） =========="
     check_env || return 1
     ensure_paths
 
@@ -211,10 +244,10 @@ start_worker() {
         return 1
     fi
 
-    backup_old_outputs
-
     echo "[步骤] 停止旧容器..."
     compose_cmd down
+
+    clear_previous_run_data
 
     echo "[步骤] 启动单 worker..."
     compose_cmd up -d
@@ -275,9 +308,13 @@ import_input_file() {
         return 1
     fi
 
-    cp "$IMPORT_SOURCE" "$INPUT_FILE"
-    chmod 666 "$INPUT_FILE" >/dev/null 2>&1 || true
-    echo "[完成] 已导入到: $INPUT_FILE"
+    if cp "$IMPORT_SOURCE" "$INPUT_FILE"; then
+        chmod 666 "$INPUT_FILE" >/dev/null 2>&1 || true
+        echo "[完成] 已导入到: $INPUT_FILE"
+    else
+        echo "[失败] 导入失败，请检查目录权限: $INPUT_FILE"
+        return 1
+    fi
 }
 
 export_outputs() {
@@ -289,7 +326,9 @@ export_outputs() {
         "$OUTPUT_DIR/final_results.xlsx" \
         "$OUTPUT_DIR/final_results.csv" \
         "$OUTPUT_DIR/failed_asins.csv" \
-        "$OUTPUT_DIR/run_summary.json"
+        "$OUTPUT_DIR/run_summary.json" \
+        "$OUTPUT_DIR/partial_final_results.xlsx" \
+        "$OUTPUT_DIR/partial_final_results.csv"
     do
         if [ -f "$f" ]; then
             cp "$f" "$EXPORT_DIR/"
@@ -298,9 +337,15 @@ export_outputs() {
     done
 
     if [ "$found" -eq 1 ]; then
-        chmod 666 "$EXPORT_DIR"/final_results.* "$EXPORT_DIR"/failed_asins.csv "$EXPORT_DIR"/run_summary.json >/dev/null 2>&1 || true
+        chmod 666 "$EXPORT_DIR"/final_results.* \
+                   "$EXPORT_DIR"/failed_asins.csv \
+                   "$EXPORT_DIR"/run_summary.json \
+                   "$EXPORT_DIR"/partial_final_results.* >/dev/null 2>&1 || true
         echo "[完成] 已导出到: $EXPORT_DIR"
-        ls -lh "$EXPORT_DIR"/final_results.* "$EXPORT_DIR"/failed_asins.csv "$EXPORT_DIR"/run_summary.json 2>/dev/null || true
+        ls -lh "$EXPORT_DIR"/final_results.* \
+               "$EXPORT_DIR"/failed_asins.csv \
+               "$EXPORT_DIR"/run_summary.json \
+               "$EXPORT_DIR"/partial_final_results.* 2>/dev/null || true
     else
         echo "[提示] 当前没有可导出的最终结果文件"
     fi
@@ -314,6 +359,9 @@ open_project_dir() {
     echo "  调试:  $PROJECT_DIR/debug"
     echo "  状态:  $PROJECT_DIR/state"
     echo "  备份:  $PROJECT_DIR/archive"
+    echo
+    echo "V1.8 说明："
+    echo "  选 3 启动时，会自动清空上次爬取残留，但保留 input_asins.xlsx"
 }
 
 main_menu() {
@@ -321,12 +369,12 @@ main_menu() {
     while true; do
         clear
         echo "========================================"
-        echo " Amazon Monitor 管理菜单（单worker分批版）"
+        echo " Amazon Monitor 管理菜单（V1.8）"
         echo " 项目目录: $PROJECT_DIR"
         echo "========================================"
         echo "1) 环境检查"
         echo "2) 导入 input_asins.xlsx"
-        echo "3) 启动单 worker"
+        echo "3) 启动单 worker（自动清空旧爬取数据）"
         echo "4) 重建镜像并启动单 worker"
         echo "5) 停止任务"
         echo "6) 查看状态"
